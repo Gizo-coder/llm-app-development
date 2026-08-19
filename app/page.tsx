@@ -11,6 +11,13 @@ export default function Home() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
+  const [personality, setPersonality] = useState("default");
+  const [summary, setSummary] = useState<{
+    ana_konu: string;
+    onemli_noktalar: string[];
+    sonuc: string;
+  } | null>(null);
+  const [summarizing, setSummarizing] = useState(false);
 
   async function sendMessage() {
     if (!input.trim()) return;
@@ -24,7 +31,7 @@ export default function Home() {
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: userMessage.content }),
+        body: JSON.stringify({ messages: [...messages, userMessage], personality }),
       });
 
       const data = await res.json();
@@ -51,6 +58,28 @@ export default function Home() {
     }
   }
 
+  async function summarizeConversation() {
+  if (messages.length === 0) return;
+  setSummarizing(true);
+
+  try {
+    const res = await fetch("/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ messages, summarize: true }),
+    });
+
+    const data = await res.json();
+    if (data.summary) {
+      setSummary(data.summary);
+     }
+    } catch (error) {
+      console.error(error);
+    } finally {
+      setSummarizing(false);
+    }
+  }
+
   function handleKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
     if (e.key === "Enter") {
       sendMessage();
@@ -63,6 +92,23 @@ export default function Home() {
         <h1 className="text-2xl font-semibold text-black dark:text-white">
           Basit Chatbot
         </h1>
+        <select
+          value={personality}
+          onChange={(e) => setPersonality(e.target.value)}
+          className="px-3 py-2 rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 text-black dark:text-white text-sm w-fit"
+        >
+          <option value="default">Varsayılan</option>
+          <option value="coach">Spor Koçu</option>
+          <option value="teacher">Öğretmen</option>
+          <option value="comedian">Komedyen</option>
+        </select>
+        <button
+          onClick={summarizeConversation}
+          disabled={summarizing || messages.length === 0}
+          className="px-3 py-2 rounded-lg border border-zinc-300 dark:border-zinc-700 text-sm disabled:opacity-50"
+        >
+          {summarizing ? "Özetleniyor..." : "Konuşmayı Özetle"}
+        </button>
 
         <div className="flex flex-col gap-3 min-h-[300px] p-4 bg-white dark:bg-zinc-900 rounded-lg border border-zinc-200 dark:border-zinc-800">
           {messages.length === 0 && (
@@ -90,6 +136,19 @@ export default function Home() {
             </p>
           )}
         </div>
+        {summary && (
+        <div className="p-4 bg-amber-50 dark:bg-amber-950 border border-amber-200 dark:border-amber-900 rounded-lg text-sm">
+          <p className="font-semibold mb-2">📋 {summary.ana_konu}</p>
+          <ul className="list-disc list-inside mb-2 space-y-1">
+            {summary.onemli_noktalar.map((point, i) => (
+              <li key={i}>{point}</li>
+            ))}
+          </ul>
+          <p className="text-zinc-600 dark:text-zinc-400">
+            <strong>Sonuç:</strong> {summary.sonuc}
+          </p>
+        </div>
+      )}
 
         <div className="flex gap-2">
           <input
