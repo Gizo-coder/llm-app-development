@@ -14,6 +14,53 @@ adım adım açıklıyorsun. Anlaşılır olmaya odaklan.`,
 mizah katıyorsun ama yine de soruyu gerçekten cevaplıyorsun.`,
 };
 
+// Gerçek hava durumu verisi çeken fonksiyon
+async function getWeather(city: string) {
+  // Önce şehrin koordinatlarını buluyoruz
+  const geoRes = await fetch(
+    `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(city)}&count=1&language=tr`
+  );
+  const geoData = await geoRes.json();
+
+  if (!geoData.results || geoData.results.length === 0) {
+    return { error: "Şehir bulunamadı" };
+  }
+
+  const { latitude, longitude, name } = geoData.results[0];
+
+  // Sonra o koordinatların hava durumunu çekiyoruz
+  const weatherRes = await fetch(
+    `https://api.open-meteo.com/v1/forecast?latitude=${latitude}&longitude=${longitude}&current=temperature_2m,weather_code`
+  );
+  const weatherData = await weatherRes.json();
+
+  return {
+    city: name,
+    temperature: weatherData.current.temperature_2m,
+    unit: "°C",
+  };
+}
+
+  // Modelin bilmesi gereken "araç" tanımı
+const WEATHER_TOOL = {
+    functionDeclarations: [
+      {
+        name: "get_weather",
+        description: "Belirtilen şehir için güncel hava durumu bilgisini döndürür",
+        parameters: {
+          type: Type.OBJECT,
+          properties: {
+            city: {
+              type: Type.STRING,
+              description: "Hava durumu sorulacak şehir adı, örn: İstanbul",
+            },
+          },
+          required: ["city"],
+        },
+      },
+    ],
+  };
+
 // Özetin uyması gereken şema
 const SUMMARY_SCHEMA = {
   type: Type.OBJECT,
@@ -74,8 +121,45 @@ export async function POST(request: Request) {
       contents,
       config: {
         systemInstruction: systemPrompt,
+        tools: [WEATHER_TOOL],
       },
     });
+
+    // Model bir fonksiyon çağırmak istiyor mu, kontrol ediyoruz
+    const functionCall = response.functionCalls?.[0];
+
+    if (functionCall && functionCall.name === "get_weather") {
+      const city = functionCall.args?.city as string;
+      const weatherResult = await getWeather(city);
+
+      // Modelin orijinal cevabını (thoughtSignature dahil) olduğu gibi kullanıyoruz
+      const modelTurn = response.candidates?.[0]?.content;
+
+      const followUp = await client.models.generateContent({
+        model: "gemini-3.6-flash",
+        contents: [
+          ...contents,
+          modelTurn, // manuel oluşturmak yerine, gelen orijinal içerik
+          {
+            role: "user",
+            parts: [
+              {
+                functionResponse: {
+                  name: "get_weather",
+                  response: weatherResult,
+                },
+              },
+            ],
+          },
+        ],
+        config: {
+          systemInstruction: systemPrompt,
+          tools: [WEATHER_TOOL],
+        },
+      });
+
+      return Response.json({ answer: followUp.text });
+    }
 
     return Response.json({ answer: response.text });
   } catch (error) {
