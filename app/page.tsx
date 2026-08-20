@@ -18,6 +18,8 @@ export default function Home() {
     sonuc: string;
   } | null>(null);
   const [summarizing, setSummarizing] = useState(false);
+  const [knowledgeMode, setKnowledgeMode] = useState(false);
+  const [usedFact, setUsedFact] = useState<string | null>(null);
 
   async function sendMessage() {
     if (!input.trim()) return;
@@ -26,12 +28,15 @@ export default function Home() {
     setMessages((prev) => [...prev, userMessage]);
     setInput("");
     setLoading(true);
+    setUsedFact(null); // Reset used fact when sending a new message
 
     try {
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ messages: [...messages, userMessage], personality }),
+        body: JSON.stringify({
+          messages: [...messages, userMessage], personality, askKnowledge: knowledgeMode
+        }),
       });
 
       const data = await res.json();
@@ -41,6 +46,9 @@ export default function Home() {
           ...prev,
           { role: "assistant", content: data.answer },
         ]);
+        if (data.usedFact) {
+          setUsedFact(data.usedFact);
+        }
       } else {
         setMessages((prev) => [
           ...prev,
@@ -109,6 +117,16 @@ export default function Home() {
         >
           {summarizing ? "Özetleniyor..." : "Konuşmayı Özetle"}
         </button>
+        <button
+          onClick={() => setKnowledgeMode((prev) => !prev)}
+          className={`px-3 py-2 rounded-lg border text-sm ${
+            knowledgeMode
+              ? "bg-blue-500 text-white border-blue-500"
+              : "border-zinc-300 dark:border-zinc-700"
+          }`}
+        >
+          {knowledgeMode ? "🧠 Bilgi Bankası Modu: AÇIK" : "🧠 Bilgi Bankası Modu: KAPALI"}
+        </button>
 
         <div className="flex flex-col gap-3 min-h-[300px] p-4 bg-white dark:bg-zinc-900 rounded-lg border border-zinc-200 dark:border-zinc-800">
           {messages.length === 0 && (
@@ -149,7 +167,11 @@ export default function Home() {
           </p>
         </div>
       )}
-
+      {usedFact && (
+        <p className="text-xs text-zinc-500 italic">
+          💡 Kullanılan bilgi: &quot;{usedFact}&quot;
+        </p>
+      )}
         <div className="flex gap-2">
           <input
             value={input}

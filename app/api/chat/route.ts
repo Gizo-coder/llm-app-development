@@ -14,6 +14,59 @@ adım adım açıklıyorsun. Anlaşılır olmaya odaklan.`,
 mizah katıyorsun ama yine de soruyu gerçekten cevaplıyorsun.`,
 };
 
+// --- EMBEDDINGS ÖRNEĞİ: Basit bir bilgi bankası ---
+
+const KNOWLEDGE_BASE = [
+  "Gizem full-stack developer olarak çalışıyor ve AI Engineering alanına geçiş yapıyor.",
+  "Bu chatbot Next.js ve Google Gemini API kullanılarak geliştirildi.",
+  "Proje GitHub'da açık kaynak olarak paylaşılıyor.",
+  "Chatbot; kişilik modu, konuşma özeti ve hava durumu sorgulama özelliklerine sahip.",
+  "Öğrenme yol haritası LLM Fundamentals'tan başlayıp Production AI'a kadar gidiyor.",
+];
+
+// Bir metnin embedding'ini (sayı listesini) çıkarıyoruz
+async function getEmbedding(text: string): Promise<number[]> {
+  const result = await client.models.embedContent({
+    model: "gemini-embedding-001",
+    contents: text,
+  });
+  return result.embeddings?.[0]?.values ?? [];
+}
+
+// İki embedding arasındaki "yakınlığı" ölçüyoruz (cosine similarity)
+function cosineSimilarity(a: number[], b: number[]): number {
+  const dotProduct = a.reduce((sum, val, i) => sum + val * b[i], 0);
+  const magnitudeA = Math.sqrt(a.reduce((sum, val) => sum + val * val, 0));
+  const magnitudeB = Math.sqrt(b.reduce((sum, val) => sum + val * val, 0));
+  return dotProduct / (magnitudeA * magnitudeB);
+}
+
+// Bilgi bankasının embedding'lerini bir kere hesaplayıp bellekte tutuyoruz
+let knowledgeEmbeddings: number[][] | null = null;
+
+async function getKnowledgeEmbeddings(): Promise<number[][]> {
+  if (knowledgeEmbeddings) return knowledgeEmbeddings;
+  knowledgeEmbeddings = await Promise.all(
+    KNOWLEDGE_BASE.map((text) => getEmbedding(text))
+  );
+  return knowledgeEmbeddings;
+}
+
+// Soruya en yakın bilgileri buluyoruz (artık birden fazla)
+async function findRelevantKnowledge(question: string, topN: number = 2): Promise<string[]> {
+  const questionEmbedding = await getEmbedding(question);
+  const kbEmbeddings = await getKnowledgeEmbeddings();
+
+  const scored = kbEmbeddings.map((embedding, i) => ({
+    text: KNOWLEDGE_BASE[i],
+    score: cosineSimilarity(questionEmbedding, embedding),
+  }));
+
+  scored.sort((a, b) => b.score - a.score);
+
+  return scored.slice(0, topN).map((item) => item.text);
+}
+
 // Gerçek hava durumu verisi çeken fonksiyon
 async function getWeather(city: string) {
   // Önce şehrin koordinatlarını buluyoruz
@@ -85,7 +138,7 @@ const SUMMARY_SCHEMA = {
 export async function POST(request: Request) {
   try {
     const body = await request.json();
-    const { messages, personality, summarize } = body;
+    const { messages, personality, summarize, askKnowledge } = body;
 
     const contents = messages.map((msg: { role: string; content: string }) => ({
       role: msg.role === "assistant" ? "model" : "user",
@@ -111,6 +164,38 @@ export async function POST(request: Request) {
 
       const summary = JSON.parse(response.text ?? "{}");
       return Response.json({ summary });
+    }
+
+        // BİLGİ BANKASI MODU (embedding örneği)
+    if (askKnowledge) {
+      const lastMessage = messages[messages.length - 1]?.content ?? "";
+      const relevantFacts = await findRelevantKnowledge(lastMessage);
+
+      const response = await client.models.generateContent({
+        model: "gemini-3.6-flash",
+        contents: [
+          {
+            role: "user",
+            parts: [
+              {
+                 text: `Sen bir bilgi asistanısın. Kendi kimliğin, eğitimin veya yapımın hakkında ASLA konuşma. Sen bir yapay zeka değilsin, sen bu projenin bilgi bankasını okuyan bir sistemsin.
+
+                Kullanıcı sana "kendini" veya "seni" diye sorsa bile, bunu HER ZAMAN "bu chatbot uygulaması" olarak yorumla — yani "sen" derken hep bu projeyi kastet, Gemini modelini veya kendi mimarini değil.
+
+                SADECE aşağıdaki bilgi bankasını kullan, başka hiçbir bilgi ekleme:
+
+                ${relevantFacts.map((f, i) => `${i + 1}. ${f}`).join("\n")}
+
+                Soru: ${lastMessage}
+
+                Cevabını SADECE yukarıdaki bilgi bankasına dayandır.`,
+              },
+            ],
+          },
+        ],
+      });
+
+      return Response.json({ answer: response.text, usedFact: relevantFacts.join(" | ") });
     }
 
     // NORMAL SOHBET MODU
