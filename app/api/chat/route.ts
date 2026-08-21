@@ -1,4 +1,5 @@
 import { GoogleGenAI, Type } from "@google/genai";
+import { documentStore } from "../upload/route";
 
 const client = new GoogleGenAI({
   apiKey: process.env.GEMINI_API_KEY,
@@ -64,6 +65,20 @@ async function findRelevantKnowledge(question: string, topN: number = 2): Promis
 
   scored.sort((a, b) => b.score - a.score);
 
+  return scored.slice(0, topN).map((item) => item.text);
+}
+
+async function findRelevantChunks(question: string, topN: number = 3): Promise<string[]> {
+  if (documentStore.chunks.length === 0) return [];
+
+  const questionEmbedding = await getEmbedding(question);
+
+  const scored = documentStore.chunks.map((chunk, i) => ({
+    text: chunk,
+    score: cosineSimilarity(questionEmbedding, documentStore.embeddings[i]),
+  }));
+
+  scored.sort((a, b) => b.score - a.score);
   return scored.slice(0, topN).map((item) => item.text);
 }
 
@@ -138,7 +153,7 @@ const SUMMARY_SCHEMA = {
 export async function POST(request: Request) {
   try {
     const body = await request.json();
-    const { messages, personality, summarize, askKnowledge } = body;
+    const { messages, personality, summarize, askKnowledge, askDocument } = body;
 
     const contents = messages.map((msg: { role: string; content: string }) => ({
       role: msg.role === "assistant" ? "model" : "user",
@@ -196,6 +211,67 @@ export async function POST(request: Request) {
       });
 
       return Response.json({ answer: response.text, usedFact: relevantFacts.join(" | ") });
+    }
+
+        // DOKÜMAN MODU (RAG)
+    if (askDocument) {
+      const lastMessage = messages[messages.length - 1]?.content ?? "";
+      const relevantChunks = await findRelevantChunks(lastMessage);
+
+      if (relevantChunks.length === 0) {
+        return Response.json({
+          answer: "Henüz bir doküman yüklenmedi. Lütfen önce bir dosya yükle.",
+        });
+      }
+
+      const response = await client.models.generateContent({
+        model: "gemini-3.6-flash",
+        contents: [{ role: "user", parts: [{ text: lastMessage }] }],
+        config: {
+          systemInstruction: `Sen yüklenen dokümana dair sorulara cevap veren bir asistansın. SADECE aşağıdaki doküman parçalarını kullanarak cevap ver, kendi genel bilgini ekleme.
+
+          Doküman parçaları:
+          ${relevantChunks.map((c, i) => `[${i + 1}] ${c}`).join("\n\n")}
+
+          Eğer soru bu parçalarla cevaplanamıyorsa "Dokümanda bu bilgiye rastlamadım" de.`,
+                  },
+     });
+
+      return Response.json({
+        answer: response.text,
+        usedChunks: relevantChunks,
+      });
+    }
+
+    // DOKÜMAN MODU (embedding örneği)
+        // DOKÜMAN MODU (RAG)
+    if (askDocument) {
+      const lastMessage = messages[messages.length - 1]?.content ?? "";
+      const relevantChunks = await findRelevantChunks(lastMessage);
+
+      if (relevantChunks.length === 0) {
+        return Response.json({
+          answer: "Henüz bir doküman yüklenmedi. Lütfen önce bir dosya yükle.",
+        });
+      }
+
+      const response = await client.models.generateContent({
+        model: "gemini-3.6-flash",
+        contents: [{ role: "user", parts: [{ text: lastMessage }] }],
+        config: {
+          systemInstruction: `Sen yüklenen dokümana dair sorulara cevap veren bir asistansın. SADECE aşağıdaki doküman parçalarını kullanarak cevap ver, kendi genel bilgini ekleme.
+
+          Doküman parçaları:
+          ${relevantChunks.map((c, i) => `[${i + 1}] ${c}`).join("\n\n")}
+
+          Eğer soru bu parçalarla cevaplanamıyorsa "Dokümanda bu bilgiye rastlamadım" de.`,
+                  },
+                });
+
+                return Response.json({
+                  answer: response.text,
+                  usedChunks: relevantChunks,
+                });
     }
 
     // NORMAL SOHBET MODU

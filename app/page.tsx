@@ -20,6 +20,10 @@ export default function Home() {
   const [summarizing, setSummarizing] = useState(false);
   const [knowledgeMode, setKnowledgeMode] = useState(false);
   const [usedFact, setUsedFact] = useState<string | null>(null);
+  const [documentMode, setDocumentMode] = useState(false);
+  const [uploadedFileName, setUploadedFileName] = useState<string | null>(null);
+  const [uploading, setUploading] = useState(false);
+  const [usedChunks, setUsedChunks] = useState<string[] | null>(null);
 
   async function sendMessage() {
     if (!input.trim()) return;
@@ -35,7 +39,7 @@ export default function Home() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          messages: [...messages, userMessage], personality, askKnowledge: knowledgeMode
+          messages: [...messages, userMessage], personality, askKnowledge: knowledgeMode, askDocument: documentMode,
         }),
       });
 
@@ -49,13 +53,11 @@ export default function Home() {
         if (data.usedFact) {
           setUsedFact(data.usedFact);
         }
-      } else {
-        setMessages((prev) => [
-          ...prev,
-          { role: "assistant", content: "Bir hata oluştu." },
-        ]);
-      }
-    } catch (error) {
+        if (data.usedChunks)  {
+          setUsedChunks(data.usedChunks);
+        }
+      } 
+      } catch (error) {
       console.error(error);
       setMessages((prev) => [
         ...prev,
@@ -87,6 +89,34 @@ export default function Home() {
       setSummarizing(false);
     }
   }
+
+  async function handleFileUpload(e: React.ChangeEvent<HTMLInputElement>) {
+  const file = e.target.files?.[0];
+  if (!file) return;
+
+  setUploading(true);
+
+  try {
+    const text = await file.text(); // dosyanın içeriğini okuyoruz
+
+    const res = await fetch("/api/upload", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text }),
+    });
+
+    const data = await res.json();
+
+    if (data.chunkCount) {
+      setUploadedFileName(file.name);
+      setDocumentMode(true); // dosya yüklenince otomatik doküman moduna geç
+    }
+  } catch (error) {
+    console.error(error);
+  } finally {
+    setUploading(false);
+  }
+}
 
   function handleKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
     if (e.key === "Enter") {
@@ -127,6 +157,21 @@ export default function Home() {
         >
           {knowledgeMode ? "🧠 Bilgi Bankası Modu: AÇIK" : "🧠 Bilgi Bankası Modu: KAPALI"}
         </button>
+
+        <div className="flex items-center gap-2">
+          <input
+            type="file"
+            accept=".txt"
+            onChange={handleFileUpload}
+            className="text-sm"
+          />
+          {uploading && <span className="text-sm text-zinc-500">Yükleniyor...</span>}
+          {uploadedFileName && (
+            <span className="text-sm text-green-600">
+              📄 {uploadedFileName} yüklendi
+            </span>
+          )}
+        </div>
 
         <div className="flex flex-col gap-3 min-h-[300px] p-4 bg-white dark:bg-zinc-900 rounded-lg border border-zinc-200 dark:border-zinc-800">
           {messages.length === 0 && (
@@ -171,7 +216,20 @@ export default function Home() {
         <p className="text-xs text-zinc-500 italic">
           💡 Kullanılan bilgi: &quot;{usedFact}&quot;
         </p>
-      )}
+        )}
+        
+        {usedChunks && usedChunks.length > 0 && (
+          <details className="text-xs text-zinc-500">
+            <summary className="cursor-pointer">
+              📎 Kullanılan doküman parçaları ({usedChunks.length})
+            </summary>
+            <ul className="mt-1 space-y-1 pl-4">
+              {usedChunks.map((chunk, i) => (
+                <li key={i}>• {chunk}</li>
+              ))}
+            </ul>
+          </details>
+        )}
         <div className="flex gap-2">
           <input
             value={input}
