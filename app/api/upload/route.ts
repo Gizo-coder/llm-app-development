@@ -1,4 +1,5 @@
 import { GoogleGenAI } from "@google/genai";
+import { PDFParse } from "pdf-parse";
 
 const client = new GoogleGenAI({
   apiKey: process.env.GEMINI_API_KEY,
@@ -6,7 +7,7 @@ const client = new GoogleGenAI({
 
 // Dokümanı küçük parçalara bölüyoruz
 function chunkText(text: string, chunkSize: number = 500): string[] {
-  const sentences = text.split(/(?<=[.!?])\s+/); // cümlelere göre böl
+  const sentences = text.split(/(?<=[.!?])\s+/);
   const chunks: string[] = [];
   let currentChunk = "";
 
@@ -33,7 +34,6 @@ async function getEmbedding(text: string): Promise<number[]> {
   return result.embeddings?.[0]?.values ?? [];
 }
 
-// Sunucu belleğinde tutacağımız doküman verisi
 export const documentStore: {
   chunks: string[];
   embeddings: number[][];
@@ -44,11 +44,31 @@ export const documentStore: {
 
 export async function POST(request: Request) {
   try {
-    const body = await request.json();
-    const { text } = body;
+    const contentType = request.headers.get("content-type") || "";
+    let text = "";
 
-    if (!text || typeof text !== "string") {
-      return Response.json({ error: "Geçerli bir metin gönderilmedi" }, { status: 400 });
+    if (contentType.includes("multipart/form-data")) {
+      // PDF ya da dosya olarak gönderilmiş
+      const formData = await request.formData();
+      const file = formData.get("file") as File;
+
+     if (file.type === "application/pdf") {
+        const arrayBuffer = await file.arrayBuffer();
+        const buffer = Buffer.from(arrayBuffer);
+        const parser = new PDFParse({ data: buffer });
+        const result = await parser.getText();
+        text = result.text;
+      } else {
+        text = await file.text();
+      }
+    } else {
+      // Eski yöntem: düz JSON ile metin gönderme (txt için hâlâ destekliyoruz)
+      const body = await request.json();
+      text = body.text;
+    }
+
+    if (!text || text.trim().length === 0) {
+      return Response.json({ error: "Dosyadan metin çıkarılamadı" }, { status: 400 });
     }
 
     const chunks = chunkText(text);

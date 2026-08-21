@@ -97,19 +97,33 @@ export default function Home() {
   setUploading(true);
 
   try {
-    const text = await file.text(); // dosyanın içeriğini okuyoruz
+    let res: Response;
 
-    const res = await fetch("/api/upload", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text }),
-    });
+    if (file.type === "application/pdf") {
+      // PDF ise dosyayı olduğu gibi (binary) gönderiyoruz
+      const formData = new FormData();
+      formData.append("file", file);
+
+      res = await fetch("/api/upload", {
+        method: "POST",
+        body: formData, // Content-Type'ı elle belirtmiyoruz, tarayıcı otomatik ayarlıyor
+      });
+    } else {
+      // .txt ise eskisi gibi düz metin olarak gönderiyoruz
+      const text = await file.text();
+
+      res = await fetch("/api/upload", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text }),
+      });
+    }
 
     const data = await res.json();
 
     if (data.chunkCount) {
       setUploadedFileName(file.name);
-      setDocumentMode(true); // dosya yüklenince otomatik doküman moduna geç
+      setDocumentMode(true);
     }
   } catch (error) {
     console.error(error);
@@ -117,7 +131,6 @@ export default function Home() {
     setUploading(false);
   }
 }
-
   function handleKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
     if (e.key === "Enter") {
       sendMessage();
@@ -161,7 +174,7 @@ export default function Home() {
         <div className="flex items-center gap-2">
           <input
             type="file"
-            accept=".txt"
+            accept=".txt,.pdf"
             onChange={handleFileUpload}
             className="text-sm"
           />
