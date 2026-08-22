@@ -1,6 +1,29 @@
 import { GoogleGenAI, Type } from "@google/genai";
 import { documentStore } from "../upload/route";
 
+// --- RATE LIMITING ---
+
+const RATE_LIMIT = 5; // dakikada izin verilen maksimum istek
+const RATE_WINDOW_MS = 60 * 1000; // 1 dakika
+
+const requestLog: Record<string, number[]> = {};
+
+function isRateLimited(identifier: string): boolean {
+  const now = Date.now();
+  const timestamps = requestLog[identifier] || [];
+
+  // Sadece son 1 dakika içindeki istekleri say, eskileri temizle
+  const recentTimestamps = timestamps.filter((t) => now - t < RATE_WINDOW_MS);
+
+  if (recentTimestamps.length >= RATE_LIMIT) {
+    return true; // limit aşıldı
+  }
+
+  recentTimestamps.push(now);
+  requestLog[identifier] = recentTimestamps;
+  return false; // henüz limit aşılmadı
+}
+
 const client = new GoogleGenAI({
   apiKey: process.env.GEMINI_API_KEY,
 });
@@ -173,6 +196,16 @@ const SUMMARY_SCHEMA = {
 
 export async function POST(request: Request) {
   try {
+     // Basit bir kimlik belirleyici (gerçek production'da IP adresi kullanılır)
+    const identifier =
+      request.headers.get("x-forwarded-for") || "anonymous";
+
+    if (isRateLimited(identifier)) {
+      return Response.json(
+        { error: "Çok fazla istek gönderdiniz. Lütfen bir dakika bekleyip tekrar deneyin." },
+        { status: 429 }
+      );
+    }
     const body = await request.json();
     const { messages, personality, summarize, askKnowledge, askDocument, agentMode } = body;
 
@@ -382,8 +415,28 @@ Eğer soru bu parçalarla cevaplanamıyorsa "Dokümanda bu bilgiye rastlamadım"
     return Response.json({ answer: response.text });
   } catch (error) {
     console.error(error);
+
+    // Gemini API'den gelen hatayı daha anlamlı hale getiriyoruz
+    if (error && typeof error === "object" && "status" in error) {
+      const status = (error as { status?: number }).status;
+
+      if (status === 429) {
+        return Response.json(
+          { error: "API kullanım kotası doldu. Lütfen birkaç saniye bekleyip tekrar deneyin." },
+          { status: 429 }
+        );
+      }
+
+      if (status === 503) {
+        return Response.json(
+          { error: "Gemini şu an yoğun, lütfen tekrar deneyin." },
+          { status: 503 }
+        );
+      }
+    }
+
     return Response.json(
-      { error: "Something went wrong" },
+      { error: "Beklenmeyen bir hata oluştu." },
       { status: 500 }
     );
   }
