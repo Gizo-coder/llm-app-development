@@ -24,6 +24,8 @@ export default function Home() {
   const [uploadedFileName, setUploadedFileName] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
   const [usedChunks, setUsedChunks] = useState<string[] | null>(null);
+  const [agentMode, setAgentMode] = useState(false);
+  const [agentSteps, setAgentSteps] = useState<string[] | null>(null);
 
   async function sendMessage() {
     if (!input.trim()) return;
@@ -33,13 +35,19 @@ export default function Home() {
     setInput("");
     setLoading(true);
     setUsedFact(null); // Reset used fact when sending a new message
+    setUsedChunks(null);
+    setAgentSteps(null);
 
     try {
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          messages: [...messages, userMessage], personality, askKnowledge: knowledgeMode, askDocument: documentMode,
+          messages: [...messages, userMessage],
+          personality,
+          askKnowledge: knowledgeMode,
+          askDocument: documentMode,
+          agentMode,
         }),
       });
 
@@ -53,11 +61,19 @@ export default function Home() {
         if (data.usedFact) {
           setUsedFact(data.usedFact);
         }
-        if (data.usedChunks)  {
+        if (data.usedChunks) {
           setUsedChunks(data.usedChunks);
         }
-      } 
-      } catch (error) {
+        if (data.agentSteps) {
+          setAgentSteps(data.agentSteps);
+        }
+      } else {
+        setMessages((prev) => [
+          ...prev,
+          { role: "assistant", content: "Bir hata oluştu." },
+        ]);
+      }
+    } catch (error) {
       console.error(error);
       setMessages((prev) => [
         ...prev,
@@ -69,20 +85,20 @@ export default function Home() {
   }
 
   async function summarizeConversation() {
-  if (messages.length === 0) return;
-  setSummarizing(true);
+    if (messages.length === 0) return;
+    setSummarizing(true);
 
-  try {
-    const res = await fetch("/api/chat", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ messages, summarize: true }),
-    });
+    try {
+      const res = await fetch("/api/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ messages, summarize: true }),
+      });
 
-    const data = await res.json();
-    if (data.summary) {
-      setSummary(data.summary);
-     }
+      const data = await res.json();
+      if (data.summary) {
+        setSummary(data.summary);
+      }
     } catch (error) {
       console.error(error);
     } finally {
@@ -91,46 +107,47 @@ export default function Home() {
   }
 
   async function handleFileUpload(e: React.ChangeEvent<HTMLInputElement>) {
-  const file = e.target.files?.[0];
-  if (!file) return;
+    const file = e.target.files?.[0];
+    if (!file) return;
 
-  setUploading(true);
+    setUploading(true);
 
-  try {
-    let res: Response;
+    try {
+      let res: Response;
 
-    if (file.type === "application/pdf") {
-      // PDF ise dosyayı olduğu gibi (binary) gönderiyoruz
-      const formData = new FormData();
-      formData.append("file", file);
+      if (file.type === "application/pdf") {
+        // PDF ise dosyayı olduğu gibi (binary) gönderiyoruz
+        const formData = new FormData();
+        formData.append("file", file);
 
-      res = await fetch("/api/upload", {
-        method: "POST",
-        body: formData, // Content-Type'ı elle belirtmiyoruz, tarayıcı otomatik ayarlıyor
-      });
-    } else {
-      // .txt ise eskisi gibi düz metin olarak gönderiyoruz
-      const text = await file.text();
+        res = await fetch("/api/upload", {
+          method: "POST",
+          body: formData, // Content-Type'ı elle belirtmiyoruz, tarayıcı otomatik ayarlıyor
+        });
+      } else {
+        // .txt ise eskisi gibi düz metin olarak gönderiyoruz
+        const text = await file.text();
 
-      res = await fetch("/api/upload", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text }),
-      });
+        res = await fetch("/api/upload", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text }),
+        });
+      }
+
+      const data = await res.json();
+
+      if (data.chunkCount) {
+        setUploadedFileName(file.name);
+        setDocumentMode(true);
+      }
+    } catch (error) {
+      console.error(error);
+    } finally {
+      setUploading(false);
     }
-
-    const data = await res.json();
-
-    if (data.chunkCount) {
-      setUploadedFileName(file.name);
-      setDocumentMode(true);
-    }
-  } catch (error) {
-    console.error(error);
-  } finally {
-    setUploading(false);
   }
-}
+
   function handleKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
     if (e.key === "Enter") {
       sendMessage();
@@ -153,6 +170,7 @@ export default function Home() {
           <option value="teacher">Öğretmen</option>
           <option value="comedian">Komedyen</option>
         </select>
+
         <button
           onClick={summarizeConversation}
           disabled={summarizing || messages.length === 0}
@@ -160,6 +178,7 @@ export default function Home() {
         >
           {summarizing ? "Özetleniyor..." : "Konuşmayı Özetle"}
         </button>
+
         <button
           onClick={() => setKnowledgeMode((prev) => !prev)}
           className={`px-3 py-2 rounded-lg border text-sm ${
@@ -169,6 +188,17 @@ export default function Home() {
           }`}
         >
           {knowledgeMode ? "🧠 Bilgi Bankası Modu: AÇIK" : "🧠 Bilgi Bankası Modu: KAPALI"}
+        </button>
+
+        <button
+          onClick={() => setAgentMode((prev) => !prev)}
+          className={`px-3 py-2 rounded-lg border text-sm ${
+            agentMode
+              ? "bg-purple-500 text-white border-purple-500"
+              : "border-zinc-300 dark:border-zinc-700"
+          }`}
+        >
+          {agentMode ? "🤖 Agent Modu: AÇIK" : "🤖 Agent Modu: KAPALI"}
         </button>
 
         <div className="flex items-center gap-2">
@@ -185,6 +215,17 @@ export default function Home() {
             </span>
           )}
         </div>
+
+        {agentSteps && agentSteps.length > 0 && (
+          <div className="text-xs text-purple-600 dark:text-purple-400 space-y-1">
+            <p className="font-semibold">🤖 Agent adımları:</p>
+            {agentSteps.map((step, i) => (
+              <p key={i}>
+                {i + 1}. {step}
+              </p>
+            ))}
+          </div>
+        )}
 
         <div className="flex flex-col gap-3 min-h-[300px] p-4 bg-white dark:bg-zinc-900 rounded-lg border border-zinc-200 dark:border-zinc-800">
           {messages.length === 0 && (
@@ -207,30 +248,30 @@ export default function Home() {
           ))}
 
           {loading && (
-            <p className="text-zinc-400 text-sm self-start">
-              Yazıyor...
-            </p>
+            <p className="text-zinc-400 text-sm self-start">Yazıyor...</p>
           )}
         </div>
+
         {summary && (
-        <div className="p-4 bg-amber-50 dark:bg-amber-950 border border-amber-200 dark:border-amber-900 rounded-lg text-sm">
-          <p className="font-semibold mb-2">📋 {summary.ana_konu}</p>
-          <ul className="list-disc list-inside mb-2 space-y-1">
-            {summary.onemli_noktalar.map((point, i) => (
-              <li key={i}>{point}</li>
-            ))}
-          </ul>
-          <p className="text-zinc-600 dark:text-zinc-400">
-            <strong>Sonuç:</strong> {summary.sonuc}
-          </p>
-        </div>
-      )}
-      {usedFact && (
-        <p className="text-xs text-zinc-500 italic">
-          💡 Kullanılan bilgi: &quot;{usedFact}&quot;
-        </p>
+          <div className="p-4 bg-amber-50 dark:bg-amber-950 border border-amber-200 dark:border-amber-900 rounded-lg text-sm">
+            <p className="font-semibold mb-2">📋 {summary.ana_konu}</p>
+            <ul className="list-disc list-inside mb-2 space-y-1">
+              {summary.onemli_noktalar.map((point, i) => (
+                <li key={i}>{point}</li>
+              ))}
+            </ul>
+            <p className="text-zinc-600 dark:text-zinc-400">
+              <strong>Sonuç:</strong> {summary.sonuc}
+            </p>
+          </div>
         )}
-        
+
+        {usedFact && (
+          <p className="text-xs text-zinc-500 italic">
+            💡 Kullanılan bilgi: &quot;{usedFact}&quot;
+          </p>
+        )}
+
         {usedChunks && usedChunks.length > 0 && (
           <details className="text-xs text-zinc-500">
             <summary className="cursor-pointer">
@@ -243,6 +284,7 @@ export default function Home() {
             </ul>
           </details>
         )}
+
         <div className="flex gap-2">
           <input
             value={input}

@@ -68,6 +68,7 @@ async function findRelevantKnowledge(question: string, topN: number = 2): Promis
   return scored.slice(0, topN).map((item) => item.text);
 }
 
+// Yüklenen dokümanda soruya en yakın parçaları buluyoruz
 async function findRelevantChunks(question: string, topN: number = 3): Promise<string[]> {
   if (documentStore.chunks.length === 0) return [];
 
@@ -109,25 +110,45 @@ async function getWeather(city: string) {
   };
 }
 
-  // Modelin bilmesi gereken "araç" tanımı
+// Modelin bilmesi gereken "araç" tanımları
 const WEATHER_TOOL = {
-    functionDeclarations: [
-      {
-        name: "get_weather",
-        description: "Belirtilen şehir için güncel hava durumu bilgisini döndürür",
-        parameters: {
-          type: Type.OBJECT,
-          properties: {
-            city: {
-              type: Type.STRING,
-              description: "Hava durumu sorulacak şehir adı, örn: İstanbul",
-            },
+  functionDeclarations: [
+    {
+      name: "get_weather",
+      description: "Belirtilen şehir için güncel hava durumu bilgisini döndürür",
+      parameters: {
+        type: Type.OBJECT,
+        properties: {
+          city: {
+            type: Type.STRING,
+            description: "Hava durumu sorulacak şehir adı, örn: İstanbul",
           },
-          required: ["city"],
         },
+        required: ["city"],
       },
-    ],
-  };
+    },
+  ],
+};
+
+const SEARCH_DOCUMENT_TOOL = {
+  functionDeclarations: [
+    {
+      name: "search_document",
+      description:
+        "Yüklenen dokümanda (varsa) belirli bir bilgiyi arar. Kullanıcının sorusuyla ilgili dokümanda bilgi olabileceğini düşündüğünde bu aracı kullan.",
+      parameters: {
+        type: Type.OBJECT,
+        properties: {
+          query: {
+            type: Type.STRING,
+            description: "Dokümanda aranacak soru veya konu",
+          },
+        },
+        required: ["query"],
+      },
+    },
+  ],
+};
 
 // Özetin uyması gereken şema
 const SUMMARY_SCHEMA = {
@@ -153,12 +174,79 @@ const SUMMARY_SCHEMA = {
 export async function POST(request: Request) {
   try {
     const body = await request.json();
-    const { messages, personality, summarize, askKnowledge, askDocument } = body;
+    const { messages, personality, summarize, askKnowledge, askDocument, agentMode } = body;
 
     const contents = messages.map((msg: { role: string; content: string }) => ({
       role: msg.role === "assistant" ? "model" : "user",
       parts: [{ text: msg.content }],
     }));
+
+    // AGENT MODU (diğer tüm modlardan önce kontrol ediyoruz — en yüksek öncelik)
+    if (agentMode) {
+      const systemPrompt = PERSONALITIES[personality] || PERSONALITIES.default;
+      const allTools = [WEATHER_TOOL, SEARCH_DOCUMENT_TOOL];
+
+      let currentContents = [...contents];
+      let finalAnswer = "";
+      const stepsLog: string[] = [];
+
+      const MAX_STEPS = 5; // sonsuz döngüyü önlemek için güvenlik sınırı
+
+      for (let step = 0; step < MAX_STEPS; step++) {
+        const response = await client.models.generateContent({
+          model: "gemini-3.6-flash",
+          contents: currentContents,
+          config: {
+            systemInstruction: systemPrompt,
+            tools: allTools,
+          },
+        });
+
+        const functionCall = response.functionCalls?.[0];
+
+        // Model artık araç kullanmak istemiyor, nihai cevabı verdi
+        if (!functionCall) {
+          finalAnswer = response.text ?? "";
+          break;
+        }
+
+        // Model bir araç çağırmak istiyor, hangisi olduğuna bakıyoruz
+        let toolResult: object;
+
+        if (functionCall.name === "get_weather") {
+          const city = functionCall.args?.city as string;
+          toolResult = await getWeather(city);
+          stepsLog.push(`🌤️ Hava durumu arandı: ${city}`);
+        } else if (functionCall.name === "search_document") {
+          const query = functionCall.args?.query as string;
+          const chunks = await findRelevantChunks(query);
+          toolResult = { results: chunks.length > 0 ? chunks : ["Dokümanda bulunamadı"] };
+          stepsLog.push(`📄 Dokümanda arandı: ${query}`);
+        } else {
+          toolResult = { error: "Bilinmeyen araç" };
+        }
+
+        // Modelin bu adımdaki cevabını (thoughtSignature dahil) geçmişe ekliyoruz
+        const modelTurn = response.candidates?.[0]?.content;
+        currentContents = [
+          ...currentContents,
+          modelTurn,
+          {
+            role: "user",
+            parts: [
+              {
+                functionResponse: {
+                  name: functionCall.name,
+                  response: toolResult,
+                },
+              },
+            ],
+          },
+        ];
+      }
+
+      return Response.json({ answer: finalAnswer, agentSteps: stepsLog });
+    }
 
     // ÖZET MODU
     if (summarize) {
@@ -181,7 +269,7 @@ export async function POST(request: Request) {
       return Response.json({ summary });
     }
 
-        // BİLGİ BANKASI MODU (embedding örneği)
+    // BİLGİ BANKASI MODU (embedding örneği)
     if (askKnowledge) {
       const lastMessage = messages[messages.length - 1]?.content ?? "";
       const relevantFacts = await findRelevantKnowledge(lastMessage);
@@ -193,17 +281,17 @@ export async function POST(request: Request) {
             role: "user",
             parts: [
               {
-                 text: `Sen bir bilgi asistanısın. Kendi kimliğin, eğitimin veya yapımın hakkında ASLA konuşma. Sen bir yapay zeka değilsin, sen bu projenin bilgi bankasını okuyan bir sistemsin.
+                text: `Sen bir bilgi asistanısın. Kendi kimliğin, eğitimin veya yapımın hakkında ASLA konuşma. Sen bir yapay zeka değilsin, sen bu projenin bilgi bankasını okuyan bir sistemsin.
 
-                Kullanıcı sana "kendini" veya "seni" diye sorsa bile, bunu HER ZAMAN "bu chatbot uygulaması" olarak yorumla — yani "sen" derken hep bu projeyi kastet, Gemini modelini veya kendi mimarini değil.
+Kullanıcı sana "kendini" veya "seni" diye sorsa bile, bunu HER ZAMAN "bu chatbot uygulaması" olarak yorumla — yani "sen" derken hep bu projeyi kastet, Gemini modelini veya kendi mimarini değil.
 
-                SADECE aşağıdaki bilgi bankasını kullan, başka hiçbir bilgi ekleme:
+SADECE aşağıdaki bilgi bankasını kullan, başka hiçbir bilgi ekleme:
 
-                ${relevantFacts.map((f, i) => `${i + 1}. ${f}`).join("\n")}
+${relevantFacts.map((f, i) => `${i + 1}. ${f}`).join("\n")}
 
-                Soru: ${lastMessage}
+Soru: ${lastMessage}
 
-                Cevabını SADECE yukarıdaki bilgi bankasına dayandır.`,
+Cevabını SADECE yukarıdaki bilgi bankasına dayandır.`,
               },
             ],
           },
@@ -213,7 +301,7 @@ export async function POST(request: Request) {
       return Response.json({ answer: response.text, usedFact: relevantFacts.join(" | ") });
     }
 
-        // DOKÜMAN MODU (RAG)
+    // DOKÜMAN MODU (RAG)
     if (askDocument) {
       const lastMessage = messages[messages.length - 1]?.content ?? "";
       const relevantChunks = await findRelevantChunks(lastMessage);
@@ -230,48 +318,17 @@ export async function POST(request: Request) {
         config: {
           systemInstruction: `Sen yüklenen dokümana dair sorulara cevap veren bir asistansın. SADECE aşağıdaki doküman parçalarını kullanarak cevap ver, kendi genel bilgini ekleme.
 
-          Doküman parçaları:
-          ${relevantChunks.map((c, i) => `[${i + 1}] ${c}`).join("\n\n")}
+Doküman parçaları:
+${relevantChunks.map((c, i) => `[${i + 1}] ${c}`).join("\n\n")}
 
-          Eğer soru bu parçalarla cevaplanamıyorsa "Dokümanda bu bilgiye rastlamadım" de.`,
-                  },
-     });
+Eğer soru bu parçalarla cevaplanamıyorsa "Dokümanda bu bilgiye rastlamadım" de.`,
+        },
+      });
 
       return Response.json({
         answer: response.text,
         usedChunks: relevantChunks,
       });
-    }
-
-    // DOKÜMAN MODU (embedding örneği)
-        // DOKÜMAN MODU (RAG)
-    if (askDocument) {
-      const lastMessage = messages[messages.length - 1]?.content ?? "";
-      const relevantChunks = await findRelevantChunks(lastMessage);
-
-      if (relevantChunks.length === 0) {
-        return Response.json({
-          answer: "Henüz bir doküman yüklenmedi. Lütfen önce bir dosya yükle.",
-        });
-      }
-
-      const response = await client.models.generateContent({
-        model: "gemini-3.6-flash",
-        contents: [{ role: "user", parts: [{ text: lastMessage }] }],
-        config: {
-          systemInstruction: `Sen yüklenen dokümana dair sorulara cevap veren bir asistansın. SADECE aşağıdaki doküman parçalarını kullanarak cevap ver, kendi genel bilgini ekleme.
-
-          Doküman parçaları:
-          ${relevantChunks.map((c, i) => `[${i + 1}] ${c}`).join("\n\n")}
-
-          Eğer soru bu parçalarla cevaplanamıyorsa "Dokümanda bu bilgiye rastlamadım" de.`,
-                  },
-                });
-
-                return Response.json({
-                  answer: response.text,
-                  usedChunks: relevantChunks,
-                });
     }
 
     // NORMAL SOHBET MODU
