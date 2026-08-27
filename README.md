@@ -1,3 +1,4 @@
+🔗 **Canlı demo:** [llm-app-development.vercel.app](https://llm-app-development.vercel.app)
 # LLM App — AI Engineering Öğrenme Projesi
 
 Google Gemini API üzerine kurulu, sıfırdan geliştirilmiş bir chatbot uygulaması. Bu proje, **LLM App Development** alanındaki temel kavramları (prompt engineering, RAG, function calling, AI agents, production pratikleri) gerçek, çalışan bir uygulama üzerinden öğrenmek için adım adım inşa edildi.
