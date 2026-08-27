@@ -1,5 +1,5 @@
 import { GoogleGenAI } from "@google/genai";
-import { PDFParse } from "pdf-parse";
+import { extractText, getDocumentProxy } from "unpdf";
 
 const client = new GoogleGenAI({
   apiKey: process.env.GEMINI_API_KEY,
@@ -52,12 +52,16 @@ export async function POST(request: Request) {
       const formData = await request.formData();
       const file = formData.get("file") as File;
 
+      if (!file) {
+        return Response.json({ error: "Dosya bulunamadı" }, { status: 400 });
+      }
+
      if (file.type === "application/pdf") {
         const arrayBuffer = await file.arrayBuffer();
-        const buffer = Buffer.from(arrayBuffer);
-        const parser = new PDFParse({ data: buffer });
-        const result = await parser.getText();
-        text = result.text;
+        const uint8Array = new Uint8Array(arrayBuffer);
+        const pdf = await getDocumentProxy(uint8Array);
+        const { text: extractedText } = await extractText(pdf, { mergePages: true });
+        text = extractedText;
       } else {
         text = await file.text();
       }
